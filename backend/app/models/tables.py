@@ -23,6 +23,8 @@ class NewsItem(Base):
     guid = Column(String(512), unique=True, nullable=False, index=True)
     ts = Column(DateTime, default=_utcnow, index=True)
     source = Column(String(256))
+    source_type = Column(String(32), default="rss")  # rss / reddit / stocktwits
+    source_tier = Column(Integer, default=2)  # 1=authoritative, 2=fast/social, 3=low-trust
     url = Column(Text)
     title = Column(Text, nullable=False)
     summary = Column(Text)
@@ -76,6 +78,9 @@ class CoverageMetric(Base):
     window_end = Column(DateTime)
     coverage_score = Column(Float)
     distinct_sources = Column(Integer)
+    tier_1_sources = Column(Integer, default=0)  # authoritative (Reuters, SEC, Yahoo Finance)
+    tier_2_sources = Column(Integer, default=0)  # fast/social (Reddit, StockTwits)
+    cross_tier_confirmed = Column(Boolean, default=False)  # signal seen in both tiers
     cluster_count = Column(Integer)
     mention_count = Column(Integer)
     created_at = Column(DateTime, default=_utcnow)
@@ -94,6 +99,9 @@ class Candidate(Base):
     distinct_sources = Column(Integer)
     rationale = Column(Text)
     narrative_tags = Column(JSON)
+    cross_tier_confirmed = Column(Boolean, default=False)
+    flow_confirmed = Column(Boolean, default=False)  # unusual options activity aligns
+    flow_score = Column(Float, default=0.0)
     status = Column(String(16), default="active")  # active / dropped / traded
     cooldown_until = Column(DateTime)
     created_at = Column(DateTime, default=_utcnow)

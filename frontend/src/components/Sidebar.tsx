@@ -6,6 +6,7 @@ import clsx from "clsx";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: "~" },
+  { href: "/signals", label: "Signal Hub", icon: "!" },
   { href: "/events", label: "Live Events", icon: ">" },
   { href: "/news", label: "News Monitor", icon: "#" },
   { href: "/candidates", label: "Candidate Funnel", icon: "^" },
@@ -42,7 +43,7 @@ export function Sidebar() {
         ))}
       </nav>
       <div className="p-3 border-t border-slate-700 text-xs text-slate-500">
-        Paper Trading - SIM
+        Signal Mode - LIVE
       </div>
     </aside>
   );

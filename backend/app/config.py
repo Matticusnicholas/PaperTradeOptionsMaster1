@@ -80,6 +80,35 @@ STARTING_CASH: float = _float("STARTING_CASH", 100_000)
 RISK_PER_TRADE_PCT: float = _float("RISK_PER_TRADE_PCT", 0.01)
 SLIPPAGE_PCT: float = _float("SLIPPAGE_PCT", 0.005)
 
+# ── Social Sources ───────────────────────────────────────────────────
+REDDIT_SUBREDDITS: List[str] = [
+    s.strip() for s in _get(
+        "REDDIT_SUBREDDITS", "wallstreetbets,stocks,options,investing"
+    ).split(",") if s.strip()
+]
+REDDIT_POLL_SECONDS: int = _int("REDDIT_POLL_SECONDS", 45)
+STOCKTWITS_POLL_SECONDS: int = _int("STOCKTWITS_POLL_SECONDS", 60)
+SOCIAL_ENABLED: bool = _get("SOCIAL_ENABLED", "true").lower() == "true"
+
+# ── Source Tier Mapping ──────────────────────────────────────────────
+TIER_1_KEYWORDS: List[str] = [
+    "reuters", "sec.gov", "yahoo finance", "bloomberg", "cnbc",
+    "wall street journal", "wsj", "financial times", "barron",
+    "associated press", "ap news",
+]
+REQUIRE_CROSS_TIER: bool = _get("REQUIRE_CROSS_TIER", "false").lower() == "true"
+
+# ── Flow Detection ───────────────────────────────────────────────────
+FLOW_VOLUME_SPIKE_MULTIPLIER: float = _float("FLOW_VOLUME_SPIKE_MULTIPLIER", 3.0)
+FLOW_OI_SPIKE_MULTIPLIER: float = _float("FLOW_OI_SPIKE_MULTIPLIER", 2.0)
+
+# ── Trigger-based fetch ─────────────────────────────────────────────
+TRIGGER_FETCH_COOLDOWN_SECONDS: int = _int("TRIGGER_FETCH_COOLDOWN_SECONDS", 300)
+
+# ── Application Mode ──────────────────────────────────────────────────
+# "signal" = alert-only dashboard (no trades), "trade" = paper trading
+APP_MODE: str = _get("APP_MODE", "signal")
+
 # ── Database ─────────────────────────────────────────────────────────
 DATABASE_URL: str = _get("DATABASE_URL", "sqlite:///./sentiment_options_lab.db")
 

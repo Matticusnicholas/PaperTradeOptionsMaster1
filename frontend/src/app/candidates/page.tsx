@@ -56,6 +56,7 @@ export default function CandidatesPage() {
                   <th className="py-2 px-2">Sentiment</th>
                   <th className="py-2 px-2">Confidence</th>
                   <th className="py-2 px-2">Coverage</th>
+                  <th className="py-2 px-2">Signals</th>
                   <th className="py-2 px-2">Status</th>
                   <th className="py-2 px-2">Created</th>
                 </tr>
@@ -91,6 +92,23 @@ export default function CandidatesPage() {
                     </td>
                     <td className="py-2 px-2 font-mono">
                       {c.coverage_score?.toFixed(1)} ({c.distinct_sources} src)
+                    </td>
+                    <td className="py-2 px-2">
+                      <div className="flex gap-1">
+                        {c.cross_tier_confirmed && (
+                          <span className="badge bg-amber-900 text-amber-300 text-xs">
+                            XT
+                          </span>
+                        )}
+                        {c.flow_confirmed && (
+                          <span className="badge bg-cyan-900 text-cyan-300 text-xs">
+                            FL
+                          </span>
+                        )}
+                        {!c.cross_tier_confirmed && !c.flow_confirmed && (
+                          <span className="text-slate-600 text-xs">-</span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-2 px-2">
                       <span
@@ -143,6 +161,16 @@ function CandidateCard({ candidate: c }: { candidate: CandidateItem }) {
           >
             {c.direction?.toUpperCase()}
           </span>
+          {c.cross_tier_confirmed && (
+            <span className="badge bg-amber-900 text-amber-300 text-xs">
+              CROSS-TIER
+            </span>
+          )}
+          {c.flow_confirmed && (
+            <span className="badge bg-cyan-900 text-cyan-300 text-xs">
+              FLOW CONFIRMED ({c.flow_score?.toFixed(0)})
+            </span>
+          )}
         </div>
         <div className={`text-2xl font-mono font-bold ${urgencyColor}`}>
           {c.urgency?.toFixed(0)}

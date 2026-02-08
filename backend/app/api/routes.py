@@ -42,6 +42,14 @@ async def ws_events(websocket: WebSocket):
         event_bus.unsubscribe(queue)
 
 
+# ── App Mode ─────────────────────────────────────────────────────────
+
+@router.get("/api/mode")
+def get_app_mode():
+    from app.config import APP_MODE
+    return {"mode": APP_MODE}
+
+
 # ── News ─────────────────────────────────────────────────────────────
 
 @router.get("/api/news")
@@ -49,6 +57,7 @@ def get_news(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     ticker: Optional[str] = None,
+    source_type: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     q = db.query(NewsItem).order_by(desc(NewsItem.ts))
@@ -58,12 +67,16 @@ def get_news(
             db.query(TickerMention.news_id).filter(TickerMention.ticker == ticker).all()
         ]
         q = q.filter(NewsItem.id.in_(news_ids))
+    if source_type:
+        q = q.filter(NewsItem.source_type == source_type)
     items = q.offset(offset).limit(limit).all()
     return [
         {
             "id": n.id, "ts": n.ts.isoformat() if n.ts else None,
             "source": n.source, "url": n.url,
             "title": n.title, "summary": (n.summary or "")[:300],
+            "source_type": n.source_type or "rss",
+            "source_tier": n.source_tier or 2,
         }
         for n in items
     ]
@@ -80,6 +93,8 @@ def get_news_detail(news_id: int, db: Session = Depends(get_db)):
         "id": n.id, "ts": n.ts.isoformat() if n.ts else None,
         "source": n.source, "url": n.url,
         "title": n.title, "summary": n.summary, "text": n.text,
+        "source_type": n.source_type or "rss",
+        "source_tier": n.source_tier or 2,
         "tickers": [
             {"ticker": m.ticker, "relevance": m.relevance, "aliases": m.matched_aliases}
             for m in mentions
@@ -137,6 +152,9 @@ def get_coverage(
             "id": c.id, "ticker": c.ticker,
             "coverage_score": c.coverage_score,
             "distinct_sources": c.distinct_sources,
+            "tier_1_sources": c.tier_1_sources or 0,
+            "tier_2_sources": c.tier_2_sources or 0,
+            "cross_tier_confirmed": c.cross_tier_confirmed or False,
             "cluster_count": c.cluster_count,
             "mention_count": c.mention_count,
             "created_at": c.created_at.isoformat() if c.created_at else None,
@@ -164,10 +182,38 @@ def get_candidates(
             "confidence": c.confidence, "coverage_score": c.coverage_score,
             "distinct_sources": c.distinct_sources, "rationale": c.rationale,
             "narrative_tags": c.narrative_tags, "status": c.status,
+            "cross_tier_confirmed": c.cross_tier_confirmed or False,
+            "flow_confirmed": c.flow_confirmed or False,
+            "flow_score": c.flow_score or 0.0,
             "created_at": c.created_at.isoformat() if c.created_at else None,
             "updated_at": c.updated_at.isoformat() if c.updated_at else None,
         }
         for c in items
+    ]
+
+
+# ── Signal Alerts (signal mode) ────────────────────────────────────
+
+@router.get("/api/signals")
+def get_signals(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Returns SIGNAL_ALERT and WATCH_ALERT events for the signal hub."""
+    items = (
+        db.query(Event)
+        .filter(Event.event_type.in_(["SIGNAL_ALERT", "WATCH_ALERT"]))
+        .order_by(desc(Event.ts))
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": e.id, "ts": e.ts.isoformat() if e.ts else None,
+            "event_type": e.event_type, "ticker": e.ticker,
+            "severity": e.severity, "payload": e.payload,
+        }
+        for e in items
     ]
 
 
@@ -353,15 +399,24 @@ def get_market_clock():
 
 @router.get("/api/health")
 def get_health(db: Session = Depends(get_db)):
+    from app.config import APP_MODE, SOCIAL_ENABLED
     news_count = db.query(NewsItem).count()
     last_news = db.query(NewsItem).order_by(desc(NewsItem.ts)).first()
     last_event = db.query(Event).order_by(desc(Event.ts)).first()
     candidates_active = db.query(Candidate).filter(Candidate.status == "active").count()
     open_positions = db.query(Position).filter(Position.status == "open").count()
+    signal_count = (
+        db.query(Event)
+        .filter(Event.event_type.in_(["SIGNAL_ALERT", "WATCH_ALERT"]))
+        .count()
+    )
 
     return {
         "status": "running",
+        "mode": APP_MODE,
+        "social_enabled": SOCIAL_ENABLED,
         "news_count": news_count,
+        "signal_count": signal_count,
         "last_news_at": last_news.ts.isoformat() if last_news and last_news.ts else None,
         "last_event_at": last_event.ts.isoformat() if last_event and last_event.ts else None,
         "active_candidates": candidates_active,
@@ -399,6 +454,16 @@ def get_ticker_view(ticker: str, db: Session = Depends(get_db)):
         .limit(10)
         .all()
     )
+    signals = (
+        db.query(Event)
+        .filter(
+            Event.ticker == ticker,
+            Event.event_type.in_(["SIGNAL_ALERT", "WATCH_ALERT"]),
+        )
+        .order_by(desc(Event.ts))
+        .limit(10)
+        .all()
+    )
 
     return {
         "ticker": ticker,
@@ -409,13 +474,23 @@ def get_ticker_view(ticker: str, db: Session = Depends(get_db)):
         ],
         "coverage": [
             {"coverage_score": c.coverage_score, "distinct_sources": c.distinct_sources,
+             "tier_1_sources": c.tier_1_sources or 0, "tier_2_sources": c.tier_2_sources or 0,
+             "cross_tier_confirmed": c.cross_tier_confirmed or False,
              "mention_count": c.mention_count, "created_at": c.created_at.isoformat() if c.created_at else None}
             for c in coverage
         ],
         "candidate": {
             "direction": candidate.direction, "urgency": candidate.urgency,
             "rationale": candidate.rationale,
+            "cross_tier_confirmed": candidate.cross_tier_confirmed or False,
+            "flow_confirmed": candidate.flow_confirmed or False,
+            "flow_score": candidate.flow_score or 0.0,
         } if candidate else None,
+        "signals": [
+            {"event_type": e.event_type, "ts": e.ts.isoformat() if e.ts else None,
+             "severity": e.severity, "payload": e.payload}
+            for e in signals
+        ],
         "positions": [
             {"id": p.id, "status": p.status, "entry_price": p.entry_price,
              "current_price": p.current_price, "unrealized_pnl": p.unrealized_pnl,

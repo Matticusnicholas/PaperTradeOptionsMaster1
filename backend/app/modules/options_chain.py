@@ -18,6 +18,7 @@ from app.config import (
     EXPIRY_NEAR_DTE_MIN,
     OPTIONS_REFRESH_MINUTES,
     STRIKE_WINDOW,
+    TRIGGER_FETCH_COOLDOWN_SECONDS,
 )
 from app.database import SessionLocal
 from app.models.tables import OptionChainSnapshot, OptionContract
@@ -43,15 +44,22 @@ class OptionsChainProvider:
     def call_count(self) -> int:
         return self._call_count
 
-    def should_fetch(self, ticker: str) -> bool:
+    def should_fetch(self, ticker: str, force: bool = False) -> bool:
         last = _last_fetch.get(ticker, 0)
+        if force:
+            # Trigger-based: use shorter cooldown
+            return (time.time() - last) >= TRIGGER_FETCH_COOLDOWN_SECONDS
         return (time.time() - last) >= self.refresh_interval
 
     async def fetch_chain(
-        self, ticker: str, underlying_price: float
+        self, ticker: str, underlying_price: float, force: bool = False,
     ) -> List[OptionContract]:
-        """Fetch options chain for a ticker. Returns list of OptionContract rows."""
-        if not self.should_fetch(ticker):
+        """Fetch options chain for a ticker. Returns list of OptionContract rows.
+
+        Args:
+            force: If True, use shorter cooldown (trigger-based fetch on confirmed signal).
+        """
+        if not self.should_fetch(ticker, force=force):
             logger.debug("Skipping %s (throttled)", ticker)
             return []
 

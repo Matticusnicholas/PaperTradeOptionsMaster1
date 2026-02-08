@@ -39,6 +39,8 @@ export interface NewsItem {
   url: string;
   title: string;
   summary: string;
+  source_type: string;
+  source_tier: number;
 }
 
 export interface NewsDetail extends NewsItem {
@@ -82,8 +84,44 @@ export interface CandidateItem {
   rationale: string;
   narrative_tags: string[];
   status: string;
+  cross_tier_confirmed: boolean;
+  flow_confirmed: boolean;
+  flow_score: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface SignalAlert {
+  id: number;
+  ts: string;
+  event_type: string;
+  ticker: string;
+  severity: string;
+  payload: {
+    ticker: string;
+    direction: string;
+    urgency: number;
+    cross_tier_confirmed?: boolean;
+    flow_confirmed?: boolean;
+    flow_score?: number;
+    market_status?: string;
+    underlying_price?: number;
+    rationale?: string;
+    action?: string;
+    watch_type?: string;
+    message?: string;
+    suggested_contract?: {
+      symbol: string;
+      type: string;
+      strike: number;
+      expiry: string;
+      score: number;
+      delta: number;
+      iv: number;
+      bid: number;
+      ask: number;
+    };
+  };
 }
 
 export interface PositionItem {
@@ -125,7 +163,10 @@ export interface MarketClockInfo {
 
 export interface HealthInfo {
   status: string;
+  mode: string;
+  social_enabled: boolean;
   news_count: number;
+  signal_count: number;
   last_news_at: string | null;
   last_event_at: string | null;
   active_candidates: number;
@@ -167,10 +208,26 @@ export interface TickerView {
   coverage: {
     coverage_score: number;
     distinct_sources: number;
+    tier_1_sources: number;
+    tier_2_sources: number;
+    cross_tier_confirmed: boolean;
     mention_count: number;
     created_at: string;
   }[];
-  candidate: { direction: string; urgency: number; rationale: string } | null;
+  candidate: {
+    direction: string;
+    urgency: number;
+    rationale: string;
+    cross_tier_confirmed: boolean;
+    flow_confirmed: boolean;
+    flow_score: number;
+  } | null;
+  signals: {
+    event_type: string;
+    ts: string;
+    severity: string;
+    payload: Record<string, any>;
+  }[];
   positions: {
     id: number;
     status: string;
@@ -180,4 +237,8 @@ export interface TickerView {
     realized_pnl: number;
     exit_reason: string;
   }[];
+}
+
+export interface AppMode {
+  mode: string;
 }

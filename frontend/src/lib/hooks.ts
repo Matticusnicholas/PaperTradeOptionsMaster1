@@ -56,3 +56,77 @@ export function useEventStream(maxEvents = 200) {
 
   return events;
 }
+
+export function useSignalNotifications() {
+  const [permission, setPermission] = useState<NotificationPermission>("default");
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setPermission(Notification.permission);
+    }
+  }, []);
+
+  const requestPermission = useCallback(async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    const result = await Notification.requestPermission();
+    setPermission(result);
+  }, []);
+
+  const notify = useCallback(
+    (title: string, body: string, tag?: string) => {
+      if (permission !== "granted") return;
+      try {
+        new Notification(title, {
+          body,
+          icon: "/favicon.ico",
+          tag: tag || "signal",
+          requireInteraction: true,
+        });
+      } catch {}
+    },
+    [permission]
+  );
+
+  return { permission, requestPermission, notify };
+}
+
+export function useSignalStream() {
+  const events = useEventStream(100);
+  const { notify } = useSignalNotifications();
+  const lastNotified = useRef<string>("");
+
+  useEffect(() => {
+    if (events.length === 0) return;
+    const latest = events[0];
+    if (
+      (latest.event_type === "SIGNAL_ALERT" || latest.event_type === "WATCH_ALERT") &&
+      latest.ts !== lastNotified.current
+    ) {
+      lastNotified.current = latest.ts;
+      const p = latest.payload || {};
+      const ticker = p.ticker || latest.ticker || "???";
+      const dir = p.direction || "";
+      const action = p.action || (dir === "bullish" ? "CALL" : dir === "bearish" ? "PUT" : "");
+
+      if (latest.event_type === "SIGNAL_ALERT") {
+        const contract = p.suggested_contract;
+        const contractInfo = contract
+          ? `\n${contract.type?.toUpperCase()} $${contract.strike} ${contract.expiry} (score ${contract.score?.toFixed(0)})`
+          : "";
+        notify(
+          `Signal: ${ticker} ${action}`,
+          `Urgency: ${p.urgency?.toFixed(0) || "?"}${p.cross_tier_confirmed ? " [CROSS-CONFIRMED]" : ""}${contractInfo}`,
+          `signal-${ticker}-${latest.ts}`
+        );
+      } else {
+        notify(
+          `Watch: ${ticker} ${action}`,
+          p.message || `${dir} sentiment — watch at market open`,
+          `watch-${ticker}-${latest.ts}`
+        );
+      }
+    }
+  }, [events, notify]);
+
+  return events;
+}

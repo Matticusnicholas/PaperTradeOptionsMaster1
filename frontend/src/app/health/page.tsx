@@ -22,9 +22,24 @@ export default function HealthPage() {
               ok={health?.status === "running"}
             />
             <StatusRow
+              label="Mode"
+              value={(health?.mode ?? "signal").toUpperCase()}
+              ok={true}
+            />
+            <StatusRow
+              label="Social Sources"
+              value={health?.social_enabled ? "Enabled" : "Disabled"}
+              ok={health?.social_enabled ?? false}
+            />
+            <StatusRow
               label="News Items"
               value={String(health?.news_count ?? 0)}
               ok={(health?.news_count ?? 0) > 0}
+            />
+            <StatusRow
+              label="Signal Alerts"
+              value={String(health?.signal_count ?? 0)}
+              ok={true}
             />
             <StatusRow
               label="Last News Poll"
@@ -100,9 +115,13 @@ export default function HealthPage() {
       <div className="card">
         <h3 className="text-lg font-semibold mb-4">Module Configuration</h3>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+          <ConfigItem label="App Mode" value={(health?.mode ?? "signal").toUpperCase()} />
           <ConfigItem label="News Poll Interval" value="180s" />
+          <ConfigItem label="Reddit Poll" value="45s" />
+          <ConfigItem label="StockTwits Poll" value="60s" />
           <ConfigItem label="Decision Tick" value="30min" />
           <ConfigItem label="Options Refresh" value="30min" />
+          <ConfigItem label="Trigger Cooldown" value="300s" />
           <ConfigItem label="Market Open" value="09:30 ET" />
           <ConfigItem label="Last Entry" value="15:00 ET" />
           <ConfigItem label="Market Close" value="16:00 ET" />
@@ -117,7 +136,9 @@ export default function HealthPage() {
           <ConfigItem label="Time Stop" value="6h" />
           <ConfigItem label="Starting Cash" value="$100,000" />
           <ConfigItem label="Delta Target" value="0.45-0.65" />
-          <ConfigItem label="Strike Window" value="+-10" />
+          <ConfigItem label="Flow Vol Spike" value="3.0x" />
+          <ConfigItem label="Flow OI Spike" value="2.0x" />
+          <ConfigItem label="Cross-Tier Required" value="No" />
         </div>
       </div>
     </div>

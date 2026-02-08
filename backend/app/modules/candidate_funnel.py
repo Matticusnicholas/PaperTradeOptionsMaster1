@@ -16,6 +16,7 @@ from app.config import (
     MIN_COVERAGE_SCORE,
     MIN_DISTINCT_SOURCES,
     MIN_SENTIMENT_MAG,
+    REQUIRE_CROSS_TIER,
 )
 from app.database import SessionLocal
 from app.models.tables import (
@@ -155,6 +156,9 @@ class CandidateFunnel:
         )
         coverage_score = coverage.coverage_score if coverage else 0
         distinct_sources = coverage.distinct_sources if coverage else 0
+        cross_tier = getattr(coverage, "cross_tier_confirmed", False) if coverage else False
+        tier_1_count = getattr(coverage, "tier_1_sources", 0) if coverage else 0
+        tier_2_count = getattr(coverage, "tier_2_sources", 0) if coverage else 0
 
         # ── Gating checks ──
         if abs(avg_sentiment) < self.min_sentiment_mag:
@@ -164,17 +168,30 @@ class CandidateFunnel:
         if coverage_score < self.min_coverage and distinct_sources < self.min_sources:
             return None
 
+        # Cross-tier gating (if enabled): require both tier 1 + tier 2
+        if REQUIRE_CROSS_TIER and not cross_tier:
+            return None
+
         # Catalyst weight
         catalyst_tags = set(all_tags) - {""}
         catalyst_weight = min(1.0, len(catalyst_tags) * 0.15)
 
-        # Urgency formula
+        # Urgency formula (with cross-tier and tier-1 boosts)
         urgency = (
             abs(avg_sentiment) * 30
             + avg_confidence * 20
             + catalyst_weight * 25
             + min(coverage_score, 20) * 1.25
         )
+
+        # Cross-tier confirmation boost: +15 urgency (the remora signal)
+        if cross_tier:
+            urgency += 15
+
+        # Tier 1 authoritative source boost
+        if tier_1_count >= 1:
+            urgency += 5 * min(tier_1_count, 3)
+
         urgency = min(100.0, urgency)
 
         direction = "bullish" if avg_sentiment > 0 else "bearish"
@@ -184,9 +201,13 @@ class CandidateFunnel:
         rationale_parts = [
             f"Direction: {direction} (avg_score={avg_sentiment:+.3f})",
             f"Confidence: {avg_confidence:.2f}",
-            f"Coverage: {coverage_score:.1f} ({distinct_sources} sources)",
-            f"Catalysts: {', '.join(unique_tags[:5]) if unique_tags else 'none'}",
+            f"Coverage: {coverage_score:.1f} ({distinct_sources} sources: {tier_1_count} T1, {tier_2_count} T2)",
         ]
+        if cross_tier:
+            rationale_parts.append("CROSS-TIER CONFIRMED")
+        rationale_parts.append(
+            f"Catalysts: {', '.join(unique_tags[:5]) if unique_tags else 'none'}"
+        )
         if top_headlines:
             rationale_parts.append(f"Top headline: {top_headlines[0]}")
 
@@ -198,6 +219,7 @@ class CandidateFunnel:
             "confidence": round(avg_confidence, 4),
             "coverage_score": coverage_score,
             "distinct_sources": distinct_sources,
+            "cross_tier_confirmed": cross_tier,
             "narrative_tags": unique_tags,
             "rationale": " | ".join(rationale_parts),
         }
@@ -224,6 +246,7 @@ class CandidateFunnel:
             existing.distinct_sources = data["distinct_sources"]
             existing.narrative_tags = data["narrative_tags"]
             existing.rationale = data["rationale"]
+            existing.cross_tier_confirmed = data.get("cross_tier_confirmed", False)
             existing.updated_at = now
             return existing
 
@@ -237,6 +260,7 @@ class CandidateFunnel:
             distinct_sources=data["distinct_sources"],
             narrative_tags=data["narrative_tags"],
             rationale=data["rationale"],
+            cross_tier_confirmed=data.get("cross_tier_confirmed", False),
             cooldown_until=cooldown_until,
             status="active",
         )

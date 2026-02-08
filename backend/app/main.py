@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
-from app.config import BACKEND_HOST, BACKEND_PORT
+from app.config import APP_MODE, BACKEND_HOST, BACKEND_PORT
 from app.database import SessionLocal
 from app.init_db import init_db
 from app.modules.event_bus import event_bus
@@ -24,8 +24,8 @@ logger = logging.getLogger("main")
 
 app = FastAPI(
     title="Sentiment Options Lab",
-    description="Real-time sentiment-driven options paper trading dashboard",
-    version="1.0.0",
+    description="Real-time sentiment-driven options signal dashboard",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -38,7 +38,7 @@ app.add_middleware(
 
 app.include_router(router)
 
-orchestrator = Orchestrator()
+orchestrator = Orchestrator(mode=APP_MODE)
 
 
 @app.on_event("startup")
@@ -49,15 +49,16 @@ async def on_startup():
     # Wire event bus to DB
     event_bus.set_db_factory(SessionLocal)
 
-    # Ensure account state
-    orchestrator.sim_broker._ensure_account()
+    # Ensure account state only in trade mode
+    if orchestrator.sim_broker:
+        orchestrator.sim_broker._ensure_account()
 
-    logger.info("Starting orchestrator background loops...")
+    logger.info("Starting orchestrator in %s mode...", APP_MODE.upper())
     asyncio.create_task(orchestrator.start())
 
     await event_bus.emit(
         "MARKET_CLOCK_STATUS", "main",
-        payload={"message": "Application started"},
+        payload={"message": f"Application started ({APP_MODE} mode)", "mode": APP_MODE},
     )
 
 

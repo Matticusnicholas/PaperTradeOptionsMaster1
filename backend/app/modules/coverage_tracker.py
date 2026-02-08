@@ -1,4 +1,4 @@
-"""CoverageIntensityTracker – tracks how widely a ticker/story is mentioned."""
+"""CoverageIntensityTracker – tier-weighted cross-confirmation coverage scoring."""
 
 from __future__ import annotations
 
@@ -19,9 +19,16 @@ from app.modules.event_bus import event_bus
 
 logger = logging.getLogger("coverage_tracker")
 
+# Tier weights: authoritative sources count more
+TIER_WEIGHTS = {
+    1: 3.0,  # Reuters, Bloomberg, Yahoo Finance, etc.
+    2: 1.0,  # Reddit, StockTwits, generic RSS
+    3: 0.5,  # Low-trust blogs, unknown sources
+}
+
 
 class CoverageIntensityTracker:
-    """Compute per-ticker coverage_score over rolling windows."""
+    """Compute per-ticker coverage_score over rolling windows with tier weighting."""
 
     def __init__(self, window_minutes: int = 60) -> None:
         self.window_minutes = window_minutes
@@ -33,7 +40,7 @@ class CoverageIntensityTracker:
 
         db: Session = SessionLocal()
         try:
-            # Get all mentions in window
+            # Get all mentions in window with full news item data
             mentions = (
                 db.query(TickerMention, NewsItem)
                 .join(NewsItem, TickerMention.news_id == NewsItem.id)
@@ -50,22 +57,45 @@ class CoverageIntensityTracker:
             mention_count = len(mentions)
             sources = set()
             titles: List[str] = []
+            tier_1_sources = set()
+            tier_2_sources = set()
 
             for mention, news in mentions:
-                sources.add(news.source or "unknown")
+                source_name = news.source or "unknown"
+                sources.add(source_name)
                 titles.append(news.title or "")
+
+                tier = news.source_tier or 2
+                if tier == 1:
+                    tier_1_sources.add(source_name)
+                else:
+                    tier_2_sources.add(source_name)
 
             distinct_sources = len(sources)
 
-            # Cluster detection: group similar titles
+            # Cluster detection
             clusters = self._cluster_titles(titles)
             cluster_count = len(clusters)
 
-            # Coverage score formula:
-            # mention_count + source_diversity_bonus + independent_cluster_bonus
-            source_bonus = distinct_sources * 1.5
-            cluster_bonus = max(0, cluster_count - 1) * 2.0  # >1 cluster = independent reports
-            coverage_score = mention_count + source_bonus + cluster_bonus
+            # ── Tier-weighted coverage score ──
+            weighted_mentions = 0.0
+            for mention, news in mentions:
+                tier = news.source_tier or 2
+                weighted_mentions += TIER_WEIGHTS.get(tier, 1.0)
+
+            # Source diversity bonus (tier 1 sources worth more)
+            t1_bonus = len(tier_1_sources) * 3.0
+            t2_bonus = len(tier_2_sources) * 1.0
+            source_bonus = t1_bonus + t2_bonus
+
+            # Independent cluster bonus
+            cluster_bonus = max(0, cluster_count - 1) * 2.0
+
+            # Cross-tier confirmation bonus (biggest signal)
+            cross_confirmed = len(tier_1_sources) > 0 and len(tier_2_sources) > 0
+            cross_bonus = 10.0 if cross_confirmed else 0.0
+
+            coverage_score = weighted_mentions + source_bonus + cluster_bonus + cross_bonus
 
             metric = CoverageMetric(
                 ticker=ticker,
@@ -73,12 +103,21 @@ class CoverageIntensityTracker:
                 window_end=now,
                 coverage_score=round(coverage_score, 2),
                 distinct_sources=distinct_sources,
+                tier_1_sources=len(tier_1_sources),
+                tier_2_sources=len(tier_2_sources),
+                cross_tier_confirmed=cross_confirmed,
                 cluster_count=cluster_count,
                 mention_count=mention_count,
             )
             db.add(metric)
             db.commit()
             db.refresh(metric)
+
+            if cross_confirmed:
+                logger.info(
+                    "CROSS-TIER CONFIRMED for %s: %d tier-1 + %d tier-2 sources",
+                    ticker, len(tier_1_sources), len(tier_2_sources),
+                )
 
             await event_bus.emit(
                 "COVERAGE_UPDATED", "coverage_tracker",
@@ -87,6 +126,9 @@ class CoverageIntensityTracker:
                     "ticker": ticker,
                     "coverage_score": metric.coverage_score,
                     "distinct_sources": distinct_sources,
+                    "tier_1_sources": len(tier_1_sources),
+                    "tier_2_sources": len(tier_2_sources),
+                    "cross_tier_confirmed": cross_confirmed,
                     "cluster_count": cluster_count,
                     "mention_count": mention_count,
                     "window_minutes": self.window_minutes,
