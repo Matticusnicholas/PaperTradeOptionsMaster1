@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-card: #1e293b;
+  --border: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.card {
+  @apply bg-slate-800 border border-slate-700 rounded-lg p-4;
+}
+
+.badge {
+  @apply px-2 py-0.5 rounded text-xs font-medium;
+}
+
+.badge-bullish {
+  @apply bg-green-900 text-green-300;
+}
+
+.badge-bearish {
+  @apply bg-red-900 text-red-300;
+}
+
+.badge-neutral {
+  @apply bg-gray-700 text-gray-300;
+}
+
+.badge-info {
+  @apply bg-blue-900 text-blue-300;
+}
+
+.badge-warning {
+  @apply bg-yellow-900 text-yellow-300;
+}
+
+.badge-error {
+  @apply bg-red-900 text-red-300;
+}
