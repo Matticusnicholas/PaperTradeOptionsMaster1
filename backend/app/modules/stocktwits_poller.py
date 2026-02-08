@@ -1,10 +1,17 @@
-"""StockTwits poller – fetch public sentiment stream per ticker (free, no auth)."""
+"""StockTwits poller – scrapes public StockTwits pages for sentiment data.
+
+The official StockTwits API has been suspended for new registrations and
+returns 403 for unauthenticated requests. This module scrapes the public
+web pages instead, extracting message data from the embedded JSON.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -18,13 +25,19 @@ from app.modules.event_bus import event_bus
 
 logger = logging.getLogger("stocktwits_poller")
 
-API_BASE = "https://api.stocktwits.com/api/2/streams/symbol"
 SOURCE_TIER = 2  # Fast/social tier
 SOURCE_TYPE = "stocktwits"
 
-# Rate limiting: StockTwits allows ~200 req/hour
+# Rate limiting
 _last_request = 0.0
-_MIN_INTERVAL = 3.0
+_MIN_INTERVAL = 5.0  # Be polite — 5s between requests
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+}
 
 
 def _hash(text: str) -> str:
@@ -32,26 +45,31 @@ def _hash(text: str) -> str:
 
 
 class StockTwitsPoller:
-    """Poll StockTwits public API for per-ticker sentiment messages."""
+    """Poll StockTwits by scraping public ticker pages."""
 
     def __init__(self) -> None:
         self.tickers = list(WATCHLIST.keys())
         self.poll_interval = STOCKTWITS_POLL_SECONDS
         self._seen_ids: set = set()
-        self._last_message_id: Dict[str, int] = {}  # ticker -> last seen msg id
+        self._ticker_index = 0  # Rotate through tickers to spread load
 
     async def poll_once(self) -> List[NewsItem]:
-        """Poll StockTwits for all watchlist tickers."""
+        """Poll StockTwits for a batch of watchlist tickers (rotating)."""
         all_items: List[NewsItem] = []
-        for ticker in self.tickers:
+
+        # Poll 3 tickers per cycle to stay under rate limits
+        batch_size = min(3, len(self.tickers))
+        for _ in range(batch_size):
+            ticker = self.tickers[self._ticker_index % len(self.tickers)]
+            self._ticker_index += 1
             try:
                 items = await self._fetch_ticker(ticker)
                 all_items.extend(items)
             except Exception as exc:
                 logger.debug("StockTwits error for %s: %s", ticker, exc)
-                # Don't spam events for expected rate limits
-                if "429" in str(exc) or "rate" in str(exc).lower():
-                    await asyncio.sleep(30)
+                if "429" in str(exc) or "403" in str(exc):
+                    logger.warning("StockTwits blocked/rate-limited, backing off")
+                    await asyncio.sleep(60)
                     break
 
         if all_items:
@@ -60,70 +78,61 @@ class StockTwitsPoller:
                 payload={
                     "source": "stocktwits",
                     "count": len(all_items),
-                    "tickers_polled": len(self.tickers),
+                    "tickers_polled": batch_size,
                 },
             )
         return all_items
 
     async def _fetch_ticker(self, ticker: str) -> List[NewsItem]:
-        """Fetch recent messages for a single ticker."""
+        """Fetch recent messages for a single ticker by scraping the web page."""
         global _last_request
 
         elapsed = time.time() - _last_request
         if elapsed < _MIN_INTERVAL:
             await asyncio.sleep(_MIN_INTERVAL - elapsed)
 
-        url = f"{API_BASE}/{ticker}.json"
-        params = {}
-        last_id = self._last_message_id.get(ticker)
-        if last_id:
-            params["since"] = last_id
-
+        # Scrape the public symbol page
+        url = f"https://stocktwits.com/symbol/{ticker}"
         _last_request = time.time()
 
         async with httpx.AsyncClient() as client:
             resp = await client.get(
-                url, params=params,
-                timeout=15,
+                url,
+                headers=HEADERS,
+                timeout=20,
                 follow_redirects=True,
             )
-            if resp.status_code == 429:
-                logger.warning("StockTwits rate limited")
+            if resp.status_code in (403, 429):
+                logger.warning("StockTwits %d for %s", resp.status_code, ticker)
                 return []
             resp.raise_for_status()
-            data = resp.json()
+            html = resp.text
 
-        messages = data.get("messages", [])
+        # Extract messages from Next.js/React embedded JSON
+        messages = self._extract_messages(html, ticker)
         if not messages:
             return []
-
-        # Track highest message id for next poll
-        max_id = max(m.get("id", 0) for m in messages)
-        if max_id:
-            self._last_message_id[ticker] = max_id
 
         items: List[NewsItem] = []
         db = SessionLocal()
 
         try:
             for msg in messages:
-                msg_id = msg.get("id", 0)
-                if msg_id in self._seen_ids:
+                msg_id = msg.get("id", "")
+                if not msg_id or msg_id in self._seen_ids:
                     continue
 
                 body = msg.get("body", "").strip()
                 if not body or len(body) < 10:
                     continue
 
-                # StockTwits provides sentiment if user tagged it
-                st_sentiment = msg.get("entities", {}).get("sentiment", {})
-                sentiment_tag = st_sentiment.get("basic") if st_sentiment else None
-                # "Bullish" or "Bearish" from StockTwits users
+                sentiment_tag = msg.get("sentiment")
+                username = msg.get("username", "unknown")
+                ts_str = msg.get("created_at", "")
 
-                created_str = msg.get("created_at", "")
                 try:
                     ts = datetime.strptime(
-                        created_str, "%Y-%m-%dT%H:%M:%SZ"
+                        ts_str, "%Y-%m-%dT%H:%M:%SZ"
                     ).replace(tzinfo=timezone.utc)
                 except (ValueError, TypeError):
                     ts = datetime.now(timezone.utc)
@@ -135,13 +144,9 @@ class StockTwitsPoller:
                     self._seen_ids.add(msg_id)
                     continue
 
-                # Add StockTwits user sentiment to the text for our engine to parse
                 enriched_body = body
                 if sentiment_tag:
                     enriched_body = f"[{sentiment_tag}] {body}"
-
-                user = msg.get("user", {})
-                username = user.get("username", "unknown")
 
                 item = NewsItem(
                     guid=guid,
@@ -182,6 +187,90 @@ class StockTwitsPoller:
             self._seen_ids = set(list(self._seen_ids)[-5000:])
 
         return items
+
+    def _extract_messages(self, html: str, ticker: str) -> List[dict]:
+        """Extract message data from the StockTwits page HTML.
+
+        StockTwits embeds data in __NEXT_DATA__ or similar JSON blobs.
+        We try multiple extraction strategies.
+        """
+        messages = []
+
+        # Strategy 1: __NEXT_DATA__ JSON
+        next_data_match = re.search(
+            r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+            html, re.DOTALL
+        )
+        if next_data_match:
+            try:
+                data = json.loads(next_data_match.group(1))
+                messages = self._walk_next_data(data)
+                if messages:
+                    return messages
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Strategy 2: Look for JSON arrays of message objects
+        msg_pattern = re.findall(
+            r'"id"\s*:\s*(\d+)\s*,.*?"body"\s*:\s*"((?:[^"\\]|\\.){10,})".*?"username"\s*:\s*"([^"]+)"',
+            html
+        )
+        for msg_id, body, username in msg_pattern:
+            body_decoded = body.encode().decode("unicode_escape", errors="replace")
+            messages.append({
+                "id": msg_id,
+                "body": body_decoded,
+                "username": username,
+                "sentiment": None,
+                "created_at": "",
+            })
+
+        # Strategy 3: Simple text extraction from data attributes
+        if not messages:
+            msg_blocks = re.findall(
+                r'data-message-id="(\d+)".*?class="[^"]*message-body[^"]*"[^>]*>(.*?)</(?:div|p|span)',
+                html, re.DOTALL
+            )
+            for msg_id, body_html in msg_blocks:
+                body = re.sub(r'<[^>]+>', '', body_html).strip()
+                if body and len(body) >= 10:
+                    messages.append({
+                        "id": msg_id,
+                        "body": body,
+                        "username": "unknown",
+                        "sentiment": None,
+                        "created_at": "",
+                    })
+
+        return messages[:25]  # Cap at 25
+
+    def _walk_next_data(self, data: dict) -> List[dict]:
+        """Recursively walk __NEXT_DATA__ to find message arrays."""
+        results = []
+
+        def _walk(obj, depth=0):
+            if depth > 10:
+                return
+            if isinstance(obj, dict):
+                # Look for message-like objects
+                if "body" in obj and "id" in obj:
+                    user = obj.get("user", {})
+                    sentiment = obj.get("entities", {}).get("sentiment", {})
+                    results.append({
+                        "id": str(obj["id"]),
+                        "body": obj.get("body", ""),
+                        "username": user.get("username", "unknown") if isinstance(user, dict) else "unknown",
+                        "sentiment": sentiment.get("basic") if isinstance(sentiment, dict) else None,
+                        "created_at": obj.get("created_at", ""),
+                    })
+                for v in obj.values():
+                    _walk(v, depth + 1)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _walk(item, depth + 1)
+
+        _walk(data)
+        return results
 
     async def run_loop(self) -> None:
         """Run forever polling on interval."""
